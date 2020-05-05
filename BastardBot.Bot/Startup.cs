@@ -32,6 +32,8 @@ namespace BastardBot.Bot
         {
             services.AddMvc();
 
+            services.AddMemoryCache(); 
+
             // Create the Bot Framework Adapter with error handling enabled.
             services.AddSingleton<IBotFrameworkHttpAdapter, AdapterWithErrorHandler>();
 

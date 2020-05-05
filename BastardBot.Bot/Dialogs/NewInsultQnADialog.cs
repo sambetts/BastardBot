@@ -109,6 +109,7 @@ namespace BastardBot.Bot.Dialogs
         {
             NewInsultQnA newInsultQnA = (NewInsultQnA)stepContext.Values[BotConstants.STEP_VALUES_NEW_INSULT_KEY];
 
+            // Confirm it's saved
             var reply = await PhraseGenerator.GetPhrase(BotConstants.CHAT_CATEGORY_INSULT_ADDED, _brain.GetBastardDBContext());
             await stepContext.Context.SendActivityAsync(
                     MessageFactory.Text(string.Format(reply, newInsultQnA.InsultResponse)),

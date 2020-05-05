@@ -16,6 +16,7 @@ using Microsoft.Bot.Builder.AI.QnA;
 using Microsoft.Bot.Builder.Dialogs;
 using Microsoft.Bot.Builder.Dialogs.Choices;
 using Microsoft.Bot.Schema;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -28,26 +29,21 @@ namespace BastardBot.Bot.Dialogs
         protected readonly ILogger Logger;
         IBotServices _botServices;
         protected BastardBrain _brain;
-        private Random randomSelecta = new Random();
+        private IMemoryCache _cache;
 
-        List<string> staticInsults = new List<string>()
-                    {
-                        "You're ugly",
-                        "You're a cunt",
-                        "I had your mother",
-                        "Bitch!",
-                        "Fuck you"
-                    };
+        private Random randomSelecta = new Random();
 
         // Dependency injection uses this constructor to instantiate MainDialog
         public MainBastardDialog(BastardRecognizer luisRecognizer, ILogger<MainBastardDialog> logger,
-            IBotServices botBervices, IServiceScopeFactory scopeFactory, DIBastardBrain brain)
+            IBotServices botBervices, IServiceScopeFactory scopeFactory, DIBastardBrain brain,
+            IMemoryCache memoryCache)
             : base(nameof(MainBastardDialog))
         {
             _luisRecognizer = luisRecognizer;
             _botServices = botBervices;
             _brain = brain;
             Logger = logger;
+            _cache = memoryCache;
 
             AddDialog(new TextPrompt(nameof(TextPrompt)));
             AddDialog(new WaterfallDialog(nameof(WaterfallDialog), new WaterfallStep[]
@@ -66,6 +62,7 @@ namespace BastardBot.Bot.Dialogs
             InitialDialogId = nameof(WaterfallDialog);
         }
 
+        #region Accept Conditions Steps
 
         private async Task<DialogTurnResult> ShowConditions(WaterfallStepContext stepContext, CancellationToken cancellationToken)
         {
@@ -119,6 +116,7 @@ namespace BastardBot.Bot.Dialogs
                     await stepContext.Context.SendActivityAsync(MessageFactory.Text("Awesome. My job is to be a bastard & insult whoever wants to chat to me."), cancellationToken);
                     await stepContext.Context.SendActivityAsync(MessageFactory.Text("Insult me and I'll reply. If it's a new insult, you can teach me it if you want. Round 1: here goes!"), cancellationToken);
 
+                    var startingInsult = await GetRandomTrainedInsult();
 
                     // Goad them to continue
                     var intro2 = new List<string>()
@@ -135,7 +133,7 @@ namespace BastardBot.Bot.Dialogs
 
                     return await stepContext.PromptAsync(nameof(TextPrompt), new PromptOptions
                     {
-                        Prompt = MessageFactory.Text($"'{GetRandomStaticInsult()}'. {randomFollowup}"),
+                        Prompt = MessageFactory.Text($"'{startingInsult}'. {randomFollowup}"),
                         RetryPrompt = MessageFactory.Text("Seriously, bring it")
                     });
                 }
@@ -151,6 +149,8 @@ namespace BastardBot.Bot.Dialogs
                 return await stepContext.NextAsync(new Choice(BotConstants.CHOICE_SAUL_GOODMAN), cancellationToken);
             }
         }
+
+        #endregion
 
         private async Task<DialogTurnResult> IntroStepAsync(WaterfallStepContext stepContext, CancellationToken cancellationToken)
         {
@@ -183,7 +183,11 @@ namespace BastardBot.Bot.Dialogs
             switch (luisResult.TopIntent().intent)
             {
                 case BastardTalk.Intent.InsultMe:
-                    await stepContext.Context.SendActivityAsync(MessageFactory.Text("Oh, an insult! Here's one someone taught me..."), cancellationToken);
+
+                    await stepContext.Context.SendActivityAsync(
+                        MessageFactory.Text("Oh, an insult! Here's one someone taught me..."),
+                        cancellationToken);
+
                     await GenerateInsultFromQnA(stepContext, cancellationToken);
                     return await GetQnAResponseFromInput(stepContext, cancellationToken);
                 case BastardTalk.Intent.ComplementInsult:
@@ -220,7 +224,7 @@ namespace BastardBot.Bot.Dialogs
             {
                 state.LastInsult = qnaInsultResult;
                 var asISaid = await PhraseGenerator.GetPhrase(BotConstants.CHAT_CATEGORY_AS_I_SAID_BEFORE, _brain.GetBastardDBContext());
-                msg = $"{asISaid}, {qnaInsultResult}. Try another one. {GetRandomStaticInsult()}";
+                msg = $"{asISaid}, {qnaInsultResult}. Try another one. {GetRandomTrainedInsult()}";
             }
             // Remember last insult
             state.LastInsult = qnaInsultResult;
@@ -269,9 +273,22 @@ namespace BastardBot.Bot.Dialogs
             await stepContext.Context.SendActivityAsync(MessageFactory.Text(randomInsult), cancellationToken);
         }
 
-        private string GetRandomStaticInsult()
+        private async Task<string> GetRandomTrainedInsult()
         {
-            return GetRandomString(staticInsults);
+            const string CACHE_INSULTS = "InsultsList";
+            List<Insult> insults = null;
+            if (!_cache.TryGetValue(CACHE_INSULTS, out insults))
+            {
+                insults = await _brain.GetTrainedInsultsOnly();
+
+                // Set cache options.
+                var cacheEntryOptions = new MemoryCacheEntryOptions()
+                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                // Save data in cache.
+                _cache.Set(CACHE_INSULTS, insults, cacheEntryOptions);
+            }
+            return GetRandomString(insults.Select(i => i.Text));
         }
 
         private string GetRandomString(IEnumerable<string> list)
@@ -281,6 +298,9 @@ namespace BastardBot.Bot.Dialogs
             return list.Skip(toSkip).Take(1).First();
         }
 
+        /// <summary>
+        /// Check for hard-coded commands.
+        /// </summary>
         private async Task<bool> HandleHardCodedResponses(WaterfallStepContext stepContext, CancellationToken cancellationToken)
         {
             switch (stepContext.Context.Activity.Text)
